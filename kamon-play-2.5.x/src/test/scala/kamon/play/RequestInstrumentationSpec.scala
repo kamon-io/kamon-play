@@ -17,26 +17,27 @@ package kamon.play
 
 import javax.inject.Inject
 
+import akka.stream.Materializer
 import kamon.Kamon
 import kamon.metric.instrument.CollectionContext
 import kamon.play.action.TraceName
-import kamon.trace.{ MetricsOnlyContext, TraceLocal, Tracer, Status }
-import org.scalatestplus.play._
+import kamon.trace.{MetricsOnlyContext, Status, TraceLocal, Tracer}
 import org.scalatest.Inside
-import play.api.DefaultGlobal
+import org.scalatestplus.play._
+import play.api.{Application, DefaultGlobal}
 import play.api.http.{HttpErrorHandler, HttpFilters, Writeable}
+import play.api.inject.guice.GuiceApplicationBuilder
 import play.api.libs.concurrent.Execution.Implicits.defaultContext
-import play.api.libs.ws.{ WSRequest, WS }
-import play.api.mvc.Results.Ok
-import play.api.mvc._
+import play.api.libs.ws.{WSClient, WSRequest}
+import play.api.mvc.Results.{InternalServerError, Ok}
+import play.api.mvc.{Action, Handler, _}
 import play.api.routing.SimpleRouter
 import play.api.test.Helpers._
 import play.api.test._
 import play.core.routing._
 
 import scala.concurrent.duration._
-import scala.concurrent.{ Await, Future }
-import akka.stream.Materializer
+import scala.concurrent.{Await, Future}
 
 class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with Inside {
   System.setProperty("config.file", "./kamon-play-2.5.x/src/test/resources/conf/application.conf")
@@ -44,7 +45,11 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
   override lazy val port: Port = 19002
   val executor = scala.concurrent.ExecutionContext.Implicits.global
 
-  implicit override lazy val app = FakeApplication(withRoutes = {
+  val kamonFilter = new GuiceApplicationBuilder()
+    .injector()
+    .instanceOf[KamonFilter]
+
+  val withRoutes: PartialFunction[(String, String), Handler] = {
     case ("GET", "/async") ⇒
       Action.async {
         Future {
@@ -57,8 +62,7 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
       }
     case ("GET", "/error") ⇒
       Action {
-        throw new Exception("This page generates an error!")
-        Ok("This page will generate an error!")
+        InternalServerError("This page will generate an error!")
       }
     case ("GET", "/redirect") ⇒
       Action {
@@ -80,13 +84,20 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
       Action {
         Ok("retrieve from TraceLocal")
       }
-  }, additionalConfiguration = Map(
+  }
+
+  val additionalConfiguration : Map[String, _] = Map(
     ("application.router", "kamon.play.Routes"),
     ("play.http.filters", "kamon.play.TestHttpFilters"),
     ("play.http.requestHandler", "play.api.http.DefaultHttpRequestHandler"),
     ("logger.root", "OFF"),
     ("logger.play", "OFF"),
-    ("logger.application", "OFF")))
+    ("logger.application", "OFF"))
+
+  implicit override lazy val app: Application = new GuiceApplicationBuilder()
+    .configure(additionalConfiguration)
+    .routes(withRoutes)
+    .build
 
   val traceTokenValue = "kamon-trace-token-test"
   val traceTokenHeaderName = "X-Trace-Token"
@@ -98,39 +109,39 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
 
   "the Request instrumentation" should {
     "respond to the Async Action with X-Trace-Token" in {
-      val Some(result) = route(FakeRequest(GET, "/async").withHeaders(traceTokenHeader, traceLocalStorageHeader))
+      val Some(result) = route(app, FakeRequest(GET, "/async").withHeaders(traceTokenHeader, traceLocalStorageHeader))
       header(traceTokenHeaderName, result) must be(expectedToken)
     }
 
     "respond to the NotFound Action with X-Trace-Token" in {
-      val Some(result) = route(FakeRequest(GET, "/notFound").withHeaders(traceTokenHeader))
+      val Some(result) = route(app, FakeRequest(GET, "/notFound").withHeaders(traceTokenHeader))
       header(traceTokenHeaderName, result) must be(expectedToken)
     }
 
     "respond to the Default Action with X-Trace-Token" in {
-      val Some(result) = route(FakeRequest(GET, "/default").withHeaders(traceTokenHeader))
+      val Some(result) = route(app, FakeRequest(GET, "/default").withHeaders(traceTokenHeader))
       header(traceTokenHeaderName, result) must be(expectedToken)
     }
 
     "respond to the Redirect Action with X-Trace-Token" in {
-      val Some(result) = route(FakeRequest(GET, "/redirect").withHeaders(traceTokenHeader))
+      val Some(result) = route(app, FakeRequest(GET, "/redirect").withHeaders(traceTokenHeader))
       header("Location", result) must be(Some("/redirected"))
       header(traceTokenHeaderName, result) must be(expectedToken)
     }
 
     "respond to the Async Action with X-Trace-Token and the renamed trace" in {
-      val result = Await.result(route(FakeRequest(GET, "/async-renamed").withHeaders(traceTokenHeader)).get, 10 seconds)
+      val result = Await.result(route(app, FakeRequest(GET, "/async-renamed").withHeaders(traceTokenHeader)).get, 10 seconds)
       Tracer.currentContext.name must be("renamed-trace")
       Some(result.header.headers(traceTokenHeaderName)) must be(expectedToken)
     }
 
     "propagate the TraceContext and LocalStorage through of filters in the current request" in {
-      route(FakeRequest(GET, "/retrieve").withHeaders(traceTokenHeader, traceLocalStorageHeader))
+      route(app, FakeRequest(GET, "/retrieve").withHeaders(traceTokenHeader, traceLocalStorageHeader))
       TraceLocal.retrieve(TraceLocalKey).get must be(traceLocalStorageValue)
     }
 
     "propagate metadata generated in the async filters" in {
-      route(FakeRequest(GET, "/retrieve"))
+      route(app, FakeRequest(GET, "/retrieve"))
       Tracer.currentContext mustBe 'closed
       inside(Tracer.currentContext) {
         case ctx: MetricsOnlyContext =>
@@ -139,17 +150,26 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
     }
 
     "response to the getRouted Action and normalise the current TraceContext name" in {
-      Await.result(WS.url(s"http://localhost:$port/getRouted").get(), 10 seconds)
+      val client = new GuiceApplicationBuilder()
+        .injector()
+        .instanceOf[WSClient]
+      Await.result(client.url(s"http://localhost:$port/getRouted").get(), 10 seconds)
       Kamon.metrics.find("getRouted.get", "trace", Map("filter" -> "async")) must not be empty
     }
 
     "response to the postRouted Action and normalise the current TraceContext name" in {
-      Await.result(WS.url(s"http://localhost:$port/postRouted").post("content"), 10 seconds)
+      val client = new GuiceApplicationBuilder()
+        .injector()
+        .instanceOf[WSClient]
+      Await.result(client.url(s"http://localhost:$port/postRouted").post("content"), 10 seconds)
       Kamon.metrics.find("postRouted.post", "trace", Map("filter" -> "async")) must not be empty
     }
 
     "response to the showRouted Action and normalise the current TraceContext name" in {
-      Await.result(WS.url(s"http://localhost:$port/showRouted/2").get(), 10 seconds)
+      val client = new GuiceApplicationBuilder()
+        .injector()
+        .instanceOf[WSClient]
+      Await.result(client.url(s"http://localhost:$port/showRouted/2").get(), 10 seconds)
       Kamon.metrics.find("show.some.id.get", "trace", Map("filter" -> "async")) must not be empty
     }
 
@@ -158,11 +178,11 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
       Kamon.metrics.find("play-server", "http-server").get.collect(collectionContext)
 
       for (repetition ← 1 to 10) {
-        Await.result(route(FakeRequest(GET, "/default").withHeaders(traceTokenHeader)).get, 10 seconds)
+        Await.result(route(app, FakeRequest(GET, "/default").withHeaders(traceTokenHeader)).get, 10 seconds)
       }
 
       for (repetition ← 1 to 5) {
-        Await.result(route(FakeRequest(GET, "/notFound").withHeaders(traceTokenHeader)).get, 10 seconds)
+        Await.result(route(app, FakeRequest(GET, "/notFound").withHeaders(traceTokenHeader)).get, 10 seconds)
       }
 
       for (repetition ← 1 to 5) {
@@ -180,7 +200,7 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
   }
 
   def routeWithOnError[T](req: Request[T])(implicit w: Writeable[T]): Option[Future[Result]] = {
-    route(req).map { result ⇒
+    route(app, req).map { result ⇒
       result.recoverWith {
         case t: Throwable ⇒ DefaultGlobal.onError(req, t)
       }
@@ -284,10 +304,12 @@ object controllers {
 }
 
 class TestNameGenerator extends NameGenerator {
-  import scala.collection.concurrent.TrieMap
-  import play.api.routing.Router
   import java.util.Locale
+
   import kamon.util.TriemapAtomicGetOrElseUpdate.Syntax
+  import play.api.routing.Router
+
+  import scala.collection.concurrent.TrieMap
 
   private val cache = TrieMap.empty[String, String]
   private val normalizePattern = """\$([^<]+)<[^>]+>""".r

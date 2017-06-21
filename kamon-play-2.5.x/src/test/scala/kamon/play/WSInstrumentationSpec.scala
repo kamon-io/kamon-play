@@ -20,9 +20,10 @@ import kamon.metric.{Entity, EntitySnapshot}
 import kamon.trace.{SegmentCategory, TraceContext, Tracer}
 import org.scalatest.{Matchers, WordSpecLike}
 import org.scalatestplus.play.OneServerPerSuite
-import play.api.libs.ws.WS
-import play.api.mvc.Action
-import play.api.mvc.Results.{Ok, BadRequest}
+import play.api.inject.guice.GuiceApplicationBuilder
+import play.api.libs.ws.WSClient
+import play.api.mvc.Results.{BadRequest, Ok}
+import play.api.mvc.{Action, AnyContent}
 import play.api.test.Helpers._
 import play.api.test._
 
@@ -33,17 +34,20 @@ import scala.util.Try
 class WSInstrumentationSpec extends WordSpecLike with Matchers with OneServerPerSuite {
   System.setProperty("config.file", "./kamon-play-2.5.x/src/test/resources/conf/application.conf")
 
+  implicit override lazy val app = new GuiceApplicationBuilder()
+    .routes {
+      case ("GET", "/async")      ⇒ Action { Ok("ok") }
+      case ("GET", "/outside")    ⇒ Action { Ok("ok") }
+      case ("GET", "/badoutside") ⇒ Action { BadRequest("ok") }
+      case ("GET", "/inside")     ⇒ callWSinsideController(s"http://localhost:$port/async")
+    }
+    .build()
+
   override lazy val port: Port = 19003
-  implicit override lazy val app = FakeApplication(withRoutes = {
-    case ("GET", "/async")      ⇒ Action { Ok("ok") }
-    case ("GET", "/outside")    ⇒ Action { Ok("ok") }
-    case ("GET", "/badoutside") ⇒ Action { BadRequest("ok") }
-    case ("GET", "/inside")     ⇒ callWSinsideController(s"http://localhost:$port/async")
-  })
 
   "the WS instrumentation" should {
     "propagate the TraceContext inside an Action and complete the WS request" in {
-      Await.result(route(FakeRequest(GET, "/inside")).get, 10 seconds)
+      Await.result(route(app, FakeRequest(GET, "/inside")).get, 10 seconds)
 
       val snapshot = takeSnapshotOf("GET: /inside", "trace")
       snapshot.histogram("elapsed-time").get.numberOfMeasurements should be(1)
@@ -65,10 +69,15 @@ class WSInstrumentationSpec extends WordSpecLike with Matchers with OneServerPer
     }
 
     "propagate the TraceContext outside an Action and complete the WS request" in {
+      val client = new GuiceApplicationBuilder()
+        .injector()
+        .instanceOf[WSClient]
+
       Tracer.withContext(newContext("trace-outside-action")) {
-        Await.result(WS.url(s"http://localhost:$port/badoutside").get(), 10 seconds)
+        Await.result(client.url(s"http://localhost:$port/badoutside").get(), 10 seconds)
         Tracer.currentContext.finish()
       }
+      Thread.sleep(500)
 
       val snapshot = takeSnapshotOf("trace-outside-action", "trace")
       snapshot.histogram("elapsed-time").get.numberOfMeasurements should be(1)
@@ -88,9 +97,13 @@ class WSInstrumentationSpec extends WordSpecLike with Matchers with OneServerPer
     }
 
     "increment the failure counter if the WS request fails" in {
+      val client = new GuiceApplicationBuilder()
+        .injector()
+        .instanceOf[WSClient]
+
       Tracer.withContext(newContext("trace-outside-action")) {
         Try {
-          Await.result(WS.url(s"http://localhost:1111/outside").get(), 10 seconds)
+          Await.result(client.url(s"http://localhost:1111/outside").get(), 10 seconds)
         }
 
         Tracer.currentContext.finish()
@@ -99,6 +112,7 @@ class WSInstrumentationSpec extends WordSpecLike with Matchers with OneServerPer
       val snapshot = takeSnapshotOf("trace-outside-action", "trace")
       snapshot.histogram("elapsed-time").get.numberOfMeasurements should be(1)
 
+      // if without this code, sometimes it cause error.
       Thread.sleep(500)
 
       val segmentMetricsSnapshot = takeSnapshotOf(s"http://localhost:1111/outside", "trace-segment",
@@ -125,11 +139,14 @@ class WSInstrumentationSpec extends WordSpecLike with Matchers with OneServerPer
     recorder.collect(collectionContext)
   }
 
-  def callWSinsideController(url: String) = Action.async {
-    import play.api.Play.current
+  def callWSinsideController(url: String): Action[AnyContent] = Action.async {
     import play.api.libs.concurrent.Execution.Implicits.defaultContext
 
-    WS.url(url).get().map { response ⇒
+    val client = new GuiceApplicationBuilder()
+      .injector()
+      .instanceOf[WSClient]
+
+    client.url(url).get().map { response ⇒
       Ok("Ok")
     }
   }
