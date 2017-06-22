@@ -16,22 +16,23 @@
 package kamon.play
 
 import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.classic.{ AsyncAppender, LoggerContext }
+import ch.qos.logback.classic.{AsyncAppender, LoggerContext}
 import ch.qos.logback.core.read.ListAppender
 import ch.qos.logback.core.status.NopStatusListener
 import kamon.trace.TraceLocal
 import kamon.trace.TraceLocal.AvailableToMdc
 import org.scalatest.BeforeAndAfter
-import org.scalatestplus.play._
+import org.scalatestplus.play.{OneServerPerSuite, PlaySpec}
 import org.slf4j
 import play.api.LoggerLike
+import play.api.inject.guice.GuiceApplicationBuilder
+import play.api.mvc.Action
 import play.api.mvc.Results.Ok
-import play.api.mvc._
 import play.api.test.Helpers._
 import play.api.test._
-import scala.concurrent.duration._
 
-import scala.concurrent.{ Await, Future }
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 
 class LoggerLikeInstrumentationSpec extends PlaySpec with OneServerPerSuite with BeforeAndAfter {
   System.setProperty("config.file", "./kamon-play-2.5.x/src/test/resources/conf/application.conf")
@@ -53,24 +54,25 @@ class LoggerLikeInstrumentationSpec extends PlaySpec with OneServerPerSuite with
     LoggingHandler.stopLogging()
   }
 
-  implicit override lazy val app = FakeApplication(withRoutes = {
-
-    case ("GET", "/logging") ⇒
-      Action.async {
-        Future {
-          TraceLocal.store(TraceLocalHeaderKey)(headerValue)
-          TraceLocal.store(TraceLocalOtherKey)(otherValue)
-          LoggingHandler.info(infoMessage)
-          Ok("OK")
-        }(executor)
-      }
-  })
+  implicit override lazy val app = new GuiceApplicationBuilder()
+    .routes{
+      case ("GET", "/logging") ⇒
+        Action.async {
+          Future {
+            TraceLocal.store(TraceLocalHeaderKey)(headerValue)
+            TraceLocal.store(TraceLocalOtherKey)(otherValue)
+            LoggingHandler.info(infoMessage)
+            Ok("OK")
+          }(executor)
+        }
+    }
+    .build()
 
   "the LoggerLike instrumentation" should {
     "allow retrieve a value from the MDC when was created a key of type AvailableToMdc in the current request" in {
       LoggingHandler.appenderStart()
 
-      Await.result(route(FakeRequest(GET, "/logging")).get, 10 seconds)
+      Await.result(route(app, FakeRequest(GET, "/logging")).get, 10 seconds)
 
       TraceLocal.retrieve(TraceLocalHeaderKey) must be(Some(headerValue))
       TraceLocal.retrieve(TraceLocalOtherKey) must be(Some(otherValue))
@@ -119,4 +121,3 @@ object LoggingHandler extends LoggerLike {
     listAppender.list.get(0).getMDCPropertyMap.get(key)
   }
 }
-
