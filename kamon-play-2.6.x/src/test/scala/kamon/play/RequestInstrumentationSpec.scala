@@ -31,7 +31,7 @@ import play.api.libs.concurrent.Execution.Implicits.defaultContext
 import play.api.libs.ws.{WSClient, WSRequest}
 import play.api.mvc.Results.{InternalServerError, Ok}
 import play.api.mvc.{Action, Handler, _}
-import play.api.routing.SimpleRouter
+import play.api.routing.{HandlerDef, SimpleRouter}
 import play.api.test.Helpers._
 import play.api.test._
 import play.core.routing._
@@ -41,7 +41,7 @@ import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 
 class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with Inside {
-  System.setProperty("config.file", "./kamon-play-2.5.x/src/test/resources/conf/application.conf")
+  System.setProperty("config.file", "./kamon-play-2.6.x/src/test/resources/conf/application.conf")
 
   override lazy val port: Port = 19002
   val executor = scala.concurrent.ExecutionContext.Implicits.global
@@ -80,7 +80,7 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
             Ok("Async.async")
           }(executor)
         }
-      }
+      }(executor)
     case ("GET", "/retrieve") ⇒
       Action {
         Ok("retrieve from TraceLocal")
@@ -150,30 +150,6 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
       }
     }
 
-    "response to the getRouted Action and normalise the current TraceContext name" in {
-      val client = new GuiceApplicationBuilder()
-        .injector()
-        .instanceOf[WSClient]
-      Await.result(client.url(s"http://localhost:$port/getRouted").get(), 10 seconds)
-      Kamon.metrics.find("getRouted.get", "trace", Map("filter" -> "async")) must not be empty
-    }
-
-    "response to the postRouted Action and normalise the current TraceContext name" in {
-      val client = new GuiceApplicationBuilder()
-        .injector()
-        .instanceOf[WSClient]
-      Await.result(client.url(s"http://localhost:$port/postRouted").post("content"), 10 seconds)
-      Kamon.metrics.find("postRouted.post", "trace", Map("filter" -> "async")) must not be empty
-    }
-
-    "response to the showRouted Action and normalise the current TraceContext name" in {
-      val client = new GuiceApplicationBuilder()
-        .injector()
-        .instanceOf[WSClient]
-      Await.result(client.url(s"http://localhost:$port/showRouted/2").get(), 10 seconds)
-      Kamon.metrics.find("show.some.id.get", "trace", Map("filter" -> "async")) must not be empty
-    }
-
     "record http server metrics for all processed requests" in {
       val collectionContext = CollectionContext(100)
       Kamon.metrics.find("play-server", "http-server").get.collect(collectionContext)
@@ -204,7 +180,6 @@ class RequestInstrumentationSpec extends PlaySpec with OneServerPerSuite with In
     val errorHandler = new GuiceApplicationBuilder()
       .injector()
       .instanceOf[ErrorHandler]
-
     route(app, req).map { result ⇒
       result.recoverWith {
         case t: Throwable ⇒ errorHandler.onServerError(req, t)
@@ -280,25 +255,10 @@ class Routes @Inject() (application: controllers.Application) extends GeneratedR
   private[this] lazy val Application_getRouted =
     Route("GET", PathPattern(List(StaticPart(prefix), StaticPart(defaultPrefix), StaticPart("getRouted"))))
 
-  private[this] lazy val Application_show =
-    Route("GET", PathPattern(List(StaticPart(prefix), StaticPart(defaultPrefix), StaticPart("showRouted/"), DynamicPart("id", """[^/]+""", encodeable = true))))
-
-  //Posts
-  private[this] lazy val Application_postRouted =
-    Route("POST", PathPattern(List(StaticPart(prefix), StaticPart(defaultPrefix), StaticPart("postRouted"))))
-
   def routes: PartialFunction[RequestHeader, Handler] = {
     case Application_getRouted(params) ⇒ call {
       createInvoker(application.getRouted,
         HandlerDef(this.getClass.getClassLoader, "", "controllers.Application", "getRouted", Nil, "GET", """some comment""", prefix + """getRouted""")).call(application.getRouted)
-    }
-    case Application_postRouted(params) ⇒ call {
-      createInvoker(application.postRouted,
-        HandlerDef(this.getClass.getClassLoader, "", "controllers.Application", "postRouted", Nil, "POST", """some comment""", prefix + """postRouted""")).call(application.postRouted)
-    }
-    case Application_show(params) ⇒ call(params.fromPath[Int]("id", None)) { (id) ⇒
-      createInvoker(application.showRouted(id),
-        HandlerDef(this.getClass.getClassLoader, "", "controllers.Application", "showRouted", Seq(classOf[Int]), "GET", """""", prefix + """show/some/$id<[^/]+>""")).call(application.showRouted(id))
     }
   }
 
@@ -312,14 +272,8 @@ object controllers {
   import play.api.mvc._
 
   class Application extends Controller {
-    val postRouted = Action {
-      Ok("invoked postRouted")
-    }
     val getRouted = Action {
       Ok("invoked getRouted")
-    }
-    def showRouted(id: Int) = Action {
-      Ok("invoked show with: " + id)
     }
   }
 }
@@ -335,17 +289,16 @@ class TestNameGenerator extends NameGenerator {
   private val cache = TrieMap.empty[String, String]
   private val normalizePattern = """\$([^<]+)<[^>]+>""".r
 
-  def generateTraceName(requestHeader: RequestHeader): String = requestHeader.tags.get(Router.Tags.RouteVerb).map { verb ⇒
-    val path = requestHeader.tags(Router.Tags.RoutePattern)
-    cache.atomicGetOrElseUpdate(s"$verb$path", {
+  def generateTraceName(requestHeader: RequestHeader): String = requestHeader.attrs.get(Router.Attrs.HandlerDef).map { handlerDef ⇒
+    cache.atomicGetOrElseUpdate(s"${handlerDef.verb}${handlerDef.path}", {
       val traceName = {
         // Convert paths of form GET /foo/bar/$paramname<regexp>/blah to foo.bar.paramname.blah.get
-        val p = normalizePattern.replaceAllIn(path, "$1").replace('/', '.').dropWhile(_ == '.')
+        val p = normalizePattern.replaceAllIn(handlerDef.path, "$1").replace('/', '.').dropWhile(_ == '.')
         val normalisedPath = {
           if (p.lastOption.exists(_ != '.')) s"$p."
           else p
         }
-        s"$normalisedPath${verb.toLowerCase(Locale.ENGLISH)}"
+        s"$normalisedPath${handlerDef.verb.toLowerCase(Locale.ENGLISH)}"
       }
       traceName
     })

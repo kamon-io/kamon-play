@@ -16,6 +16,7 @@
 val play23Version     = "2.3.10"
 val play24Version     = "2.4.8"
 val play25Version     = "2.5.4"
+val play26Version     = "2.6.0"
 
 val kamonCore         = "io.kamon"                  %%  "kamon-core"            % "0.6.7"
 val kamonScala        = "io.kamon"                  %%  "kamon-scala"           % "0.6.7"
@@ -36,11 +37,17 @@ val play25            = "com.typesafe.play"         %%  "play"                  
 val playWS25          = "com.typesafe.play"         %%  "play-ws"               % play25Version
 val playTest25        = "org.scalatestplus.play"    %%  "scalatestplus-play"    % "1.5.0"
 
+//play 2.6.x
+val play26            = "com.typesafe.play"         %%  "play"                  % play26Version
+val playWS26          = "com.typesafe.play"         %%  "play-ws"               % play26Version
+val playLogBack26     = "com.typesafe.play"         %%  "play-logback"          % play26Version
+val playTest26        = "org.scalatestplus.play"    %%  "scalatestplus-play"    % "3.0.0"
+
 val resolutionRepos = Seq("typesafe repo" at "http://repo.typesafe.com/typesafe/releases/")
 
 lazy val kamonPlay = Project("kamon-play", file("."))
   .settings(noPublishing: _*)
-  .aggregate(kamonPlay23, kamonPlay24, kamonPlay25)
+  .aggregate(kamonPlay23, kamonPlay24, kamonPlay25, kamonPlay26)
 
 lazy val kamonPlay23 = Project("kamon-play-23", file("kamon-play-2.3.x"))
   .settings(Seq(
@@ -86,6 +93,21 @@ lazy val kamonPlay25 = Project("kamon-play-25", file("kamon-play-2.5.x"))
       compileScope(play25, playWS25, kamonCore, kamonScala) ++
       providedScope(aspectJ, typesafeConfig) ++
       testScope(playTest25))
+
+lazy val kamonPlay26 = Project("kamon-play-26", file("kamon-play-2.6.x"))
+  .settings(Seq(
+    bintrayPackage := "kamon-play",
+    moduleName := "kamon-play-2.6",
+    scalaVersion := "2.11.8",
+    crossScalaVersions := Seq("2.11.8"),
+    testGrouping in Test := singleTestPerJvm((definedTests in Test).value, (javaOptions in Test).value)))
+  .settings(aspectJSettings: _*)
+  .settings(resolvers ++= resolutionRepos)
+  .settings(
+    libraryDependencies ++=
+      compileScope(play26, playWS26, kamonCore, kamonScala) ++
+        providedScope(aspectJ, typesafeConfig) ++
+        testScope(playTest26, playLogBack26))
 
 import sbt.Tests._
 def singleTestPerJvm(tests: Seq[TestDefinition], jvmSettings: Seq[String]): Seq[Group] =
