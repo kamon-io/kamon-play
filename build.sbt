@@ -99,7 +99,7 @@ lazy val kamonPlay26 = Project("kamon-play-26", file("kamon-play-2.6.x"))
     bintrayPackage := "kamon-play",
     moduleName := "kamon-play-2.6",
     scalaVersion := "2.11.8",
-    crossScalaVersions := Seq("2.11.8"),
+    crossScalaVersions := Seq("2.11.8", "2.12.1"),
     testGrouping in Test := singleTestPerJvm((definedTests in Test).value, (javaOptions in Test).value)))
   .settings(aspectJSettings: _*)
   .settings(resolvers ++= resolutionRepos)
