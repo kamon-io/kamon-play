@@ -16,8 +16,7 @@
 package kamon.play.instrumentation
 
 import io.netty.handler.codec.http.{HttpRequest, HttpResponse}
-import kamon.context.Context
-import kamon.play.{OperationNameFilter, instrumentation}
+import kamon.play.OperationNameFilter
 import org.aspectj.lang.ProceedingJoinPoint
 import org.aspectj.lang.annotation._
 import play.api.mvc.EssentialFilter

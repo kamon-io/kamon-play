@@ -16,7 +16,6 @@
 package kamon.play.instrumentation
 
 import kamon.Kamon
-import kamon.context.Context
 import kamon.trace.Span
 import kamon.util.CallingThreadExecutionContext
 

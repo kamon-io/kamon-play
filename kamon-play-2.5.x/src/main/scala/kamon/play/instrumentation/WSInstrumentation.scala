@@ -28,7 +28,7 @@ import scala.concurrent.Future
 
 @Aspect
 class WSInstrumentation {
-  import WSInstrumentation._wsInstrumentationFilter
+  import WSInstrumentation._
 
   @Pointcut("execution(* play.api.libs.ws.WSClient+.url(..))")
   def wsClientUrl(): Unit = {}
@@ -37,13 +37,11 @@ class WSInstrumentation {
   def aroundWSClientUrl(pjp: ProceedingJoinPoint): Any =
     pjp.proceed()
       .asInstanceOf[WSRequest]
-      .withRequestFilter(_wsInstrumentationFilter)
+      .withRequestFilter(requestFilter)
 }
 
 object WSInstrumentation {
-  private val _wsInstrumentationFilter = requestFilter()
-
-  def requestFilter(): WSRequestFilter = new WSRequestFilter {
+  lazy val requestFilter: WSRequestFilter = new WSRequestFilter {
     override def apply(next: WSRequestExecutor): WSRequestExecutor = new WSRequestExecutor {
 
       override def execute(request: WSRequest): Future[WSResponse] = {

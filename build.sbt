@@ -18,8 +18,11 @@ val play25Version     = "2.5.18"
 val play26Version     = "2.6.12"
 
 val kamonCore         = "io.kamon"                  %%  "kamon-core"            % "1.1.0"
-val kamonScala        = "io.kamon"                  %%  "kamon-scala-future"    % "1.0.0"
+val kamonScala        = "io.kamon"                  %%  "kamon-scala-future"    % "1.0.2"
 val kamonTestkit      = "io.kamon"                  %%  "kamon-testkit"         % "1.0.0"
+
+val kanelaScalaExtension  = "io.kamon"        %%  "kanela-scala-extension"  % "0.0.10"
+val kamonExecutors        = "io.kamon"     %%   "kamon-executors"         % "1.0.2"
 
 //play 2.4.x
 val play24            = "com.typesafe.play"         %%  "play"                  % play24Version
@@ -48,7 +51,6 @@ lazy val kamonPlay = Project("kamon-play", file("."))
   .settings(noPublishing: _*)
   .aggregate(kamonPlay24, kamonPlay25, kamonPlay26)
 
-
 lazy val kamonPlay24 = Project("kamon-play-24", file("kamon-play-2.4.x"))
   .enablePlugins(JavaAgent)
   .settings(Seq(
@@ -57,8 +59,7 @@ lazy val kamonPlay24 = Project("kamon-play-24", file("kamon-play-2.4.x"))
       scalaVersion := "2.11.8",
       crossScalaVersions := Seq("2.10.6", "2.11.8"),
     testGrouping in Test := singleTestPerJvm((definedTests in Test).value, (javaOptions in Test).value)))
-  .settings(javaAgents += "org.aspectj" % "aspectjweaver"  % "1.8.10"  % "compile;test")
-  .settings(resolvers += Resolver.bintrayRepo("kamon-io", "snapshots"))
+  .settings(javaAgents ++= resolveAgent)
   .settings(
     libraryDependencies ++=
       compileScope(play24, playWS24, kamonCore, kamonScala) ++
@@ -73,11 +74,10 @@ lazy val kamonPlay25 = Project("kamon-play-25", file("kamon-play-2.5.x"))
       scalaVersion := "2.11.8",
       crossScalaVersions := Seq("2.11.8"),
       testGrouping in Test := singleTestPerJvm((definedTests in Test).value, (javaOptions in Test).value)))
-  .settings(javaAgents += "org.aspectj" % "aspectjweaver"  % "1.8.10"  % "compile;test")
-  .settings(resolvers += Resolver.bintrayRepo("kamon-io", "snapshots"))
+  .settings(javaAgents ++= resolveAgent)
   .settings(
     libraryDependencies ++=
-      compileScope(play25, playWS25, kamonCore, kamonScala) ++
+      compileScope(play25, playWS25, kamonCore, kamonScala, kanelaScalaExtension) ++
       providedScope(aspectJ, typesafeConfig) ++
       testScope(playTest25, scalatestplus25, kamonTestkit, logbackClassic))
 
@@ -90,11 +90,11 @@ lazy val kamonPlay26 = Project("kamon-play-26", file("kamon-play-2.6.x"))
     scalaVersion := "2.12.4",
     crossScalaVersions := Seq("2.11.12", "2.12.4"),
     testGrouping in Test := singleTestPerJvm((definedTests in Test).value, (javaOptions in Test).value)))
-  .settings(javaAgents += "org.aspectj" % "aspectjweaver"  % "1.8.10"  % "compile;test")
-  .settings(resolvers += Resolver.bintrayRepo("kamon-io", "snapshots"))
+  .settings(javaAgents ++= resolveAgent)
+  .settings(resolvers += Resolver.mavenLocal)
   .settings(
     libraryDependencies ++=
-      compileScope(play26, playNetty26, playWS26, kamonCore, kamonScala) ++
+      compileScope(play26, playNetty26, playWS26, kamonCore, kamonScala, kanelaScalaExtension) ++
         providedScope(aspectJ, typesafeConfig, akkaHttp) ++
         testScope(playTest26, scalatestplus26, playLogBack26, kamonTestkit))
 
@@ -108,3 +108,11 @@ def singleTestPerJvm(tests: Seq[TestDefinition], jvmSettings: Seq[String]): Seq[
   }
 
 enableProperCrossScalaVersionTasks
+
+def resolveAgent: Seq[ModuleID] = {
+  val agent = Option(System.getProperty("agent")).getOrElse("aspectj")
+  if(agent.equalsIgnoreCase("kanela"))
+    Seq("org.aspectj" % "aspectjweaver" % "1.9.1" % "compile", "io.kamon" % "kanela-agent" % "0.0.300" % "compile;test")
+  else
+    Seq("org.aspectj" % "aspectjweaver" % "1.9.1" % "compile;test", "io.kamon" % "kanela-agent" % "0.0.11" % "compile")
+}
